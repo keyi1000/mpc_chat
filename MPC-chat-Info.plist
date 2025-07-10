@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <!-- アプリのローカルネットワークアクセスの説明 -->
+        <key>NSLocalNetworkUsageDescription</key>
+        <string>このアプリはピアツーピア通信をサポートするためにローカルネットワークを使用します。</string>
+        
+        <!-- Bonjourサービスで使用するサービスタイプ -->
+        <key>NSBonjourServices</key>
+        <array>
+            <!--string内の名前はserviceTypeと同じ名前にする必要がある-->
+            <string>_mpc-chat._tcp</string>
+        </array>
+        <key>NSBluetoothAlwaysUsageDescription</key>
+        <string>近くのデバイスと通信するためにBluetoothを使用します</string>
+    </dict>
+</plist>
