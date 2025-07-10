@@ -1,7 +1,63 @@
+// DBに保存されたメッセージ一覧を取得する関数
+func fetchAllSavedMessages() -> [(senderId: String, receiverId: String, messageText: String, createdAt: String, localUniqueId: String)] {
+    let dbPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!.appending("/messages.sqlite3")
+    var db: OpaquePointer? = nil
+    var result: [(String, String, String, String, String)] = []
+    if sqlite3_open(dbPath, &db) != SQLITE_OK {
+        print("[DB] open error (fetch)")
+        return result
+    }
+    defer { sqlite3_close(db) }
+
+    // テーブルがなければ作成（安全のため）
+    let createTable = """
+    CREATE TABLE IF NOT EXISTS messages (
+      messages_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_id TEXT NOT NULL,
+      receiver_id TEXT NOT NULL,
+      message_text TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      synced_at DATETIME NULL,
+      local_unique_id TEXT NOT NULL,
+      UNIQUE(sender_id, local_unique_id)
+    );
+    """
+    if sqlite3_exec(db, createTable, nil, nil, nil) != SQLITE_OK {
+        print("[DB] create table error (fetch): \(String(cString: sqlite3_errmsg(db)))")
+        return result
+    }
+
+    let query = "SELECT sender_id, receiver_id, message_text, created_at, local_unique_id FROM messages ORDER BY messages_id DESC;"
+    var stmt: OpaquePointer? = nil
+    if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let senderId = String(cString: sqlite3_column_text(stmt, 0))
+            let receiverId = String(cString: sqlite3_column_text(stmt, 1))
+            let messageText = String(cString: sqlite3_column_text(stmt, 2))
+            let createdAt = String(cString: sqlite3_column_text(stmt, 3))
+            let localUniqueId = String(cString: sqlite3_column_text(stmt, 4))
+            result.append((senderId, receiverId, messageText, createdAt, localUniqueId))
+        }
+        sqlite3_finalize(stmt)
+    } else {
+        print("[DB] prepare error (fetch): \(String(cString: sqlite3_errmsg(db)))")
+    }
+    return result
+}
 import MultipeerConnectivity
+import SQLite3
 
 // MultipeerConnectivityを管理するクラス
 class MultipeerManager: NSObject, ObservableObject {
+    // DBに保存されたメッセージをログ出力する（デバッグ用）
+    func printAllSavedMessagesToLog() {
+        let messages = fetchAllSavedMessages()
+        print("[DB] --- Saved messages ---")
+        for msg in messages {
+            print("[DB] sender: \(msg.senderId), receiver: \(msg.receiverId), text: \(msg.messageText), at: \(msg.createdAt), uuid: \(msg.localUniqueId)")
+        }
+        print("[DB] --- End ---")
+    }
     // サービスの種類を定義
     private let serviceType = "mpc-chat"
     // 自身のMCPeerIDを保持
@@ -110,14 +166,14 @@ class MultipeerManager: NSObject, ObservableObject {
     }
     
     // メッセージを送信
-    func send(_ message: String) {
+    func send(_ message: String, receiverId: String? = nil) {
         // 接続されたピアが存在し、メッセージが有効な場合のみ送信
         guard !session.connectedPeers.isEmpty, let data = message.data(using: .utf8) else {
             print("メッセージを送信できません: 接続されたピアがいないか、メッセージが無効です")
-            // 接続されたピアがいない場合はメッセージを保存
+            // 接続されたピアがいない場合はメッセージをDBに保存
             if session.connectedPeers.isEmpty {
-                saveMessageLocally(message)
-                
+                let rid = receiverId ?? "unknown"
+                saveMessageLocally(message, receiverId: rid)
                 // 接続が必要な状態でまだ再接続処理が始まっていなければ開始
                 if !needsReconnect {
                     needsReconnect = true
@@ -126,15 +182,19 @@ class MultipeerManager: NSObject, ObservableObject {
             }
             return
         }
-        
         do {
             // メッセージを接続されたすべてのピアに送信
             try session.send(data, toPeers: session.connectedPeers, with: .reliable)
             print("MultipeerManager: Sent message to \(session.connectedPeers.count) peer(s)")
+            // 送信後にDBの内容をログ出力
+            printAllSavedMessagesToLog()
         } catch {
             print("MultipeerManager: Error sending message: \(error.localizedDescription)")
             // 送信に失敗した場合はローカルに保存
-            saveMessageLocally(message)
+            let rid = receiverId ?? "unknown"
+            saveMessageLocally(message, receiverId: rid)
+            // 保存後にDBの内容をログ出力
+            printAllSavedMessagesToLog()
         }
     }
     
@@ -317,9 +377,56 @@ extension MultipeerManager: MCNearbyServiceAdvertiserDelegate {
 }
 
 // メッセージをローカルに保存する関数
-func saveMessageLocally(_ message: String) {
-    var pending = UserDefaults.standard.stringArray(forKey: "pendingMessages") ?? []
-    pending.append(message)
-    UserDefaults.standard.set(pending, forKey: "pendingMessages")
-    print("MultipeerManager: Message saved locally for later sending")
+// メッセージをローカルDBに保存する関数（WebSocket未接続時のMPC送信用）
+func saveMessageLocally(_ message: String, receiverId: String) {
+    // sender_id, receiver_id, message_text, local_unique_id を保存
+    let senderId = UserDefaults.standard.string(forKey: "localUserName") ?? UIDevice.current.name
+    let dbPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!.appending("/messages.sqlite3")
+    var db: OpaquePointer? = nil
+    if sqlite3_open(dbPath, &db) != SQLITE_OK {
+        print("[DB] open error")
+        return
+    }
+    defer { sqlite3_close(db) }
+
+    let createTable = """
+    CREATE TABLE IF NOT EXISTS messages (
+      messages_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_id TEXT NOT NULL,
+      receiver_id TEXT NOT NULL,
+      message_text TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      synced_at DATETIME NULL,
+      local_unique_id TEXT NOT NULL,
+      UNIQUE(sender_id, local_unique_id)
+    );
+    """
+    if sqlite3_exec(db, createTable, nil, nil, nil) != SQLITE_OK {
+        print("[DB] create table error")
+        return
+    }
+
+    let insert = "INSERT OR IGNORE INTO messages (sender_id, receiver_id, message_text, local_unique_id) VALUES (?, ?, ?, ?);"
+    var stmt: OpaquePointer? = nil
+    if sqlite3_prepare_v2(db, insert, -1, &stmt, nil) == SQLITE_OK {
+        let localUniqueId = UUID().uuidString
+        sqlite3_bind_text(stmt, 1, (senderId as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (receiverId as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 3, (message as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 4, (localUniqueId as NSString).utf8String, -1, nil)
+        if sqlite3_step(stmt) == SQLITE_DONE {
+            print("[DB] message saved: sender=\(senderId), receiver=\(receiverId), text=\(message)")
+            // 直近の保存内容を全て出力
+            let all = fetchAllSavedMessages()
+            print("[DB][確認] 現在DBに保存されている内容:")
+            for s in all {
+                print("[DB][確認] sender_id=\(s.senderId), receiver_id=\(s.receiverId), message_text=\(s.messageText), created_at=\(s.createdAt), local_unique_id=\(s.localUniqueId)")
+            }
+        } else {
+            print("[DB] insert error")
+        }
+        sqlite3_finalize(stmt)
+    } else {
+        print("[DB] prepare error")
+    }
 }
