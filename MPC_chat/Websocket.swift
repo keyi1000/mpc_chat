@@ -96,12 +96,12 @@ class WebSocketManager: ObservableObject {
         }
     }
     
-    // 修正版: JSONで送信
-    func send(_ message: String) {
+    // 修正版: JSONで送信 + receiverId対応
+    func send(_ message: String, receiverId: String? = nil) {
         print("状態: \(webSocketTask?.state != .running)")
         if webSocketTask?.state != .running {
             print("WebSocketは接続されていません。メッセージを保存します。")
-            saveMessageLocally(message)
+            saveMessageLocally(message, receiverId: receiverId)
         } else {
             let chatMessage = ChatMessage(device: UIDevice.current.name, message: message)
             guard let jsonData = try? JSONEncoder().encode(chatMessage),
@@ -119,18 +119,33 @@ class WebSocketManager: ObservableObject {
         }
     }
     
-    func saveMessageLocally(_ message: String) {
-        var pending = UserDefaults.standard.stringArray(forKey: "pendingMessages") ?? []
-        pending.append(message)
-        UserDefaults.standard.set(pending, forKey: "pendingMessages")
-        // ここで保存済みメッセージ一覧を出力
-        let savedMessages = UserDefaults.standard.stringArray(forKey: "pendingMessages") ?? []
-        print("【保存済みメッセージ一覧】")
-        for (index, msg) in savedMessages.enumerated() {
-            print("[\(index + 1)] \(msg)")
-        }
-        print("【保存済みメッセージ一覧】", UserDefaults.standard.stringArray(forKey: "pendingMessages") ?? [])
+// 送信者ID・受信者IDも保存するバージョン
+func saveMessageLocally(_ message: String, receiverId: String? = nil) {
+    // JSON型で保存: [ { message, date, senderId, receiverId } ]
+    let now = ISO8601DateFormatter().string(from: Date())
+    let senderId = UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device-id"
+    let receiver = receiverId ?? ""
+    let dict: [String: String] = [
+        "message": message,
+        "date": now,
+        "senderId": senderId,
+        "receiverId": receiver
+    ]
+    var pendingArray = UserDefaults.standard.array(forKey: "pendingMessages") as? [[String: String]] ?? []
+    pendingArray.append(dict)
+    UserDefaults.standard.set(pendingArray, forKey: "pendingMessages")
+    // 保存済みメッセージ一覧を出力
+    let savedMessages = UserDefaults.standard.array(forKey: "pendingMessages") as? [[String: String]] ?? []
+    print("【保存済みメッセージ一覧】")
+    for (index, msgDict) in savedMessages.enumerated() {
+        let text = msgDict["message"] ?? ""
+        let date = msgDict["date"] ?? ""
+        let sender = msgDict["senderId"] ?? ""
+        let receiver = msgDict["receiverId"] ?? ""
+        print("[\(index + 1)] \(text) (\(date)) sender=\(sender) receiver=\(receiver)")
     }
+    print("【保存済みメッセージ一覧】", savedMessages)
+}
     
     public func getPendingMessages() -> [String] {
         return UserDefaults.standard.stringArray(forKey: "pendingMessages") ?? []

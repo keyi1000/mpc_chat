@@ -106,7 +106,6 @@ struct ContentView: View {
                     
                     Button("保存") {
                         webSocketManager.userName = username
-                        multipeerManager.updatePeerIdWithUserName()
                         showUserNameDialog = false
                     }
                     .disabled(username.isEmpty)
