@@ -1,0 +1,37 @@
+# macOS system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Xcode user-specific files
+*.xcuserstate
+*.xcuserdatad/
+**/xcuserdata/
+
+# Xcode build files
+build/
+DerivedData/
+
+# Xcode workspace settings
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.swiftpm/
+Packages/
+Package.pins
+Package.resolved
+
+# CocoaPods
+Pods/
+*.xcworkspace
+
+# Carthage
+Carthage/Build/
+
+# IDE files
+.vscode/
+.idea/
