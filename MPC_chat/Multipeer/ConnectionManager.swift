@@ -272,6 +272,9 @@ extension MultipeerConnectionManager: MCSessionDelegate {
                 self.needsReconnect = false
                 self.reconnectAttempts = 0
                 
+                // UUID交換状態をリセット（新しい接続のため）
+                self.messagingManager?.resetUUIDExchangeState()
+                
                 // メッセージング管理に保留メッセージの送信を委譲
                 self.messagingManager?.trySendingPendingMessages()
                 

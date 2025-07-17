@@ -91,6 +91,22 @@ struct ContentView: View {
                 showPendingMessages = true
             }
             .padding(.top)
+            // --- 統一された削除ボタン ---
+            Button("全メッセージ削除") {
+                // P2Pメッセージ削除
+                let multipeerManager = MultipeerMessagingManager()
+                multipeerManager.clearAllSavedMessages()
+
+                // データベースメッセージ削除
+                MultipeerDatabaseManager.shared.clearAllMessages()
+
+                // WebSocketメッセージ削除
+                webSocketManager.clearPendingMessages()
+
+                print("【全メッセージ】削除完了")
+            }
+            .foregroundColor(.red)
+            .padding(.top, 4)
         }
         .sheet(isPresented: $showUserNameDialog) {
             VStack(spacing: 20) {

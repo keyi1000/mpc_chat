@@ -16,7 +16,7 @@ import SQLite3
  * 使用される専門マネージャー:
  * - MultipeerConnectionManager: 接続・セッション管理
  * - MultipeerMessagingManager: メッセージ送受信
- * - MultipeerMessageManager: データ永続化
+ * - MultipeerDatabaseManager: データ永続化
  * - WebSocketManager: WebSocket通信（既存）
  */
 class MultipeerManager: ObservableObject {
@@ -45,6 +45,8 @@ class MultipeerManager: ObservableObject {
         // マネージャー間の相互参照を設定
         connectionManager.setMessagingManager(messagingManager)
         messagingManager.setConnectionManager(connectionManager)
+        // WebSocketManagerにMessagingManagerの参照を設定
+        manager.setMessagingManager(messagingManager)
         
         // 各マネージャーの状態変更をこのクラスのPublishedプロパティにバインド
         connectionManager.$connectedPeers
@@ -96,7 +98,7 @@ class MultipeerManager: ObservableObject {
      * データ永続化マネージャーに委譲
      */
     func printAllSavedMessagesToLog() {
-        MultipeerMessageManager.shared.printAllSavedMessagesToLog()
+        MultipeerDatabaseManager.shared.printAllSavedMessagesToLog()
     }
 }
 
@@ -114,13 +116,13 @@ class MultipeerManager: ObservableObject {
  * - Parameter receiverId: 受信者ID
  */
 func saveMessageLocally(_ message: String, receiverId: String) {
-    MultipeerMessageManager.shared.saveMessageLocally(message, receiverId: receiverId)
+    MultipeerDatabaseManager.shared.saveMessageLocally(message, receiverId: receiverId)
 }
 
 /**
  * 保存されたメッセージを全て取得（レガシー互換性）
  * - Returns: メッセージのタプル配列
  */
-func fetchAllSavedMessages() -> [(senderId: String, receiverId: String, messageText: String, createdAt: String, localUniqueId: String)] {
-    return MultipeerMessageManager.shared.fetchAllSavedMessages()
+func fetchAllSavedMessages() -> [(senderId: String, receiverId: String, messageText: String, createdAt: String)] {
+    return MultipeerDatabaseManager.shared.fetchAllSavedMessages()
 }
