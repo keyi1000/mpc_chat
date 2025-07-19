@@ -149,11 +149,11 @@ class MultipeerMessagingManager: NSObject, ObservableObject {
             try session.send(data, toPeers: session.connectedPeers, with: .reliable)
             print("メッセージを送信しました: 接続されたピア数 = \(session.connectedPeers.count)")
             print("【送信詳細】sender_uuid: \(self.uuid), receiver_uuid: \(actualReceiverId), message: \(message)")
-            // 送信成功時もDBに保存
-            MultipeerDatabaseManager.shared.saveMessageLocally(message, receiverId: actualReceiverId, senderId: self.uuid)
+            // 送信成功時はDBに保存しない（成功しているため）
+            print("【MultipeerConnectivity送信成功】DBには保存しません")
             MultipeerDatabaseManager.shared.printAllSavedMessagesToLog()
         } catch {
-            // 送信失敗時の処理：ローカル保存とログ出力
+            // 送信失敗時のみDBに保存
             print("メッセージ送信エラー: \(error.localizedDescription)")
             print("【DB保存デバッグ】receiverId: \(receiverId ?? "nil"), actualReceiverId: '\(actualReceiverId)'")
             MultipeerDatabaseManager.shared.saveMessageLocally(message, receiverId: actualReceiverId, senderId: self.uuid)
@@ -173,19 +173,40 @@ class MultipeerMessagingManager: NSObject, ObservableObject {
               let session = connectionManager.getSession(),
               !session.connectedPeers.isEmpty else { return }
         
-        // SQLiteデータベースから保留メッセージを取得
-        let savedMessages = MultipeerDatabaseManager.shared.fetchAllSavedMessages()
-        if !savedMessages.isEmpty {
-            print("【DB保留メッセージ送信】データベースから\(savedMessages.count)件のメッセージを再送信します")
+        // SQLiteデータベースから保留メッセージを取得（IDも含む）
+        let savedMessagesWithId = MultipeerDatabaseManager.shared.fetchAllSavedMessagesWithId()
+        if !savedMessagesWithId.isEmpty {
+            print("【DB保留メッセージ送信】データベースから\(savedMessagesWithId.count)件のメッセージを再送信します")
+            var successfulMessageIds: [Int] = []
+            
             // 各メッセージを順次送信（既にDBに保存済みなので、重複保存を避ける）
-            for msgData in savedMessages {
+            for msgData in savedMessagesWithId {
                 // 直接MultipeerConnectivity経由で送信（DB保存はスキップ）
-                sendDirectMessage(msgData.messageText, to: session)
+                do {
+                    if let data = msgData.messageText.data(using: .utf8) {
+                        try session.send(data, toPeers: session.connectedPeers, with: .reliable)
+                        print("【DB再送信】メッセージを直接送信しました: \(msgData.messageText)")
+                        successfulMessageIds.append(msgData.id)
+                    }
+                } catch {
+                    print("【DB再送信失敗】メッセージ送信エラー: \(error.localizedDescription)")
+                }
             }
             
-            // 全ての再送信完了後、データベースをクリア
-            MultipeerDatabaseManager.shared.clearAllMessages()
-            print("【DB保留メッセージ送信】再送信完了、データベースをクリアしました")
+            // 送信成功したメッセージのみ個別削除
+            for messageId in successfulMessageIds {
+                let deleteSuccess = MultipeerDatabaseManager.shared.deleteMessage(withId: messageId)
+                if deleteSuccess {
+                    print("【MultipeerConnectivity再送信】DB個別削除成功: ID \(messageId)")
+                }
+            }
+            
+            let remainingCount = savedMessagesWithId.count - successfulMessageIds.count
+            if remainingCount > 0 {
+                print("【DB保留メッセージ送信】\(remainingCount)件の送信失敗メッセージがDBに残存")
+            } else {
+                print("【DB保留メッセージ送信】全メッセージ再送信完了、データベースをクリアしました")
+            }
         }
     }
     
@@ -266,27 +287,6 @@ class MultipeerMessagingManager: NSObject, ObservableObject {
             print("送信: \(message) to \(peers.count) ピア")
         } catch {
             print("送信失敗: \(error)")
-        }
-    }
-    
-    /**
-     * ダイレクトメッセージ送信（DB保存なし）
-     * - Parameter message: 送信するメッセージ
-     * - Parameter session: MCSession
-     * 
-     * 注意: このメソッドはDB保存を行わない、再送信専用
-     */
-    private func sendDirectMessage(_ message: String, to session: MCSession) {
-        guard let data = message.data(using: .utf8) else {
-            print("メッセージのデータ変換に失敗しました")
-            return
-        }
-        
-        do {
-            try session.send(data, toPeers: session.connectedPeers, with: .reliable)
-            print("【DB再送信】メッセージを直接送信しました: \(message)")
-        } catch {
-            print("【DB再送信失敗】メッセージ送信エラー: \(error.localizedDescription)")
         }
     }
 

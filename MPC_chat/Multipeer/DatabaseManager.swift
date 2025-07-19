@@ -309,4 +309,80 @@ class MultipeerDatabaseManager {
             print("[DB] 新テーブル作成エラー: \(String(cString: sqlite3_errmsg(db)))")
         }
     }
+    
+    // MARK: - Individual Message Operations
+    
+    /**
+     * メッセージIDも含んだ詳細情報を取得
+     * WebSocket送信完了後の個別削除に使用
+     */
+    func fetchAllSavedMessagesWithId() -> [(id: Int, senderId: String, receiverId: String, messageText: String, createdAt: String)] {
+        let dbPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!.appending("/messages.sqlite3")
+        var db: OpaquePointer? = nil
+        var result: [(Int, String, String, String, String)] = []
+        
+        // データベースオープン
+        if sqlite3_open(dbPath, &db) != SQLITE_OK {
+            print("[DB] open error (fetch with id)")
+            return result
+        }
+        defer { sqlite3_close(db) }
+
+        // メッセージ取得クエリ（IDも含む）
+        let query = "SELECT messages_id, sender_id, receiver_id, message_text, created_at FROM messages ORDER BY messages_id DESC;"
+        var stmt: OpaquePointer? = nil
+        if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+            // 結果を一行ずつ処理
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = Int(sqlite3_column_int(stmt, 0))
+                let senderId = String(cString: sqlite3_column_text(stmt, 1))
+                let receiverId = String(cString: sqlite3_column_text(stmt, 2))
+                let messageText = String(cString: sqlite3_column_text(stmt, 3))
+                let createdAt = String(cString: sqlite3_column_text(stmt, 4))
+                result.append((id, senderId, receiverId, messageText, createdAt))
+            }
+        }
+        sqlite3_finalize(stmt)
+        
+        return result
+    }
+    
+    /**
+     * 指定されたメッセージIDのメッセージを削除
+     * - Parameter messageId: 削除するメッセージのID
+     * - Returns: 削除が成功したかどうか
+     */
+    func deleteMessage(withId messageId: Int) -> Bool {
+        let dbPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!.appending("/messages.sqlite3")
+        var db: OpaquePointer? = nil
+        
+        // データベースオープン
+        if sqlite3_open(dbPath, &db) != SQLITE_OK {
+            print("[DB] delete error: 削除対象メッセージID \(messageId) - データベースを開けませんでした")
+            return false
+        }
+        defer { sqlite3_close(db) }
+        
+        // 削除クエリ
+        let deleteQuery = "DELETE FROM messages WHERE messages_id = ?;"
+        var stmt: OpaquePointer? = nil
+        
+        if sqlite3_prepare_v2(db, deleteQuery, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, Int32(messageId))
+            
+            if sqlite3_step(stmt) == SQLITE_DONE {
+                let deletedRows = sqlite3_changes(db)
+                print("[DB] メッセージ削除成功: ID \(messageId), 削除行数: \(deletedRows)")
+                sqlite3_finalize(stmt)
+                return deletedRows > 0
+            } else {
+                print("[DB] メッセージ削除失敗: ID \(messageId) - \(String(cString: sqlite3_errmsg(db)))")
+            }
+        } else {
+            print("[DB] 削除クエリ準備失敗: \(String(cString: sqlite3_errmsg(db)))")
+        }
+        
+        sqlite3_finalize(stmt)
+        return false
+    }
 }

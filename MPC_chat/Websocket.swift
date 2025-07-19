@@ -2,8 +2,13 @@ import Foundation
 import UIKit // iOSの場合のみ必要
 
 struct ChatMessage: Codable {
-    let device: String
-    let message: String
+    let senderId: String     // 送信者UUID
+    let receiverId: String   // 受信者UUID
+    let message: String      // メッセージ内容
+    let timestamp: String?   // 送信時刻（オプション）
+    
+    // 後方互換性のため旧形式も保持
+    var device: String { return senderId }
 }
 
 class WebSocketManager: ObservableObject {
@@ -42,6 +47,16 @@ class WebSocketManager: ObservableObject {
         // イニシャライザでMultipeerManagerを受け取る
         init(multipeerManager: MultipeerManager? = nil) {
             self.multipeerManager = multipeerManager
+            print("[WebSocket] 初期化開始 - multipeerManager: \(multipeerManager != nil)")
+            
+            // MultipeerManagerからMessagingManagerの参照を取得
+            if let multipeerManager = multipeerManager {
+                self.messagingManager = multipeerManager.getMessagingManager()
+                print("[WebSocket] 初期化時にMessagingManagerの参照を設定しました")
+                print("[WebSocket] 初期化後の確認 - messagingManager: \(self.messagingManager != nil)")
+            } else {
+                print("[WebSocket] 警告: MultipeerManagerがnilのため、MessagingManagerを設定できませんでした")
+            }
             
             // データベースを一度リセットしてから接続テストを実行
             print("[WebSocket] 初期化時にデータベースをリセットしてテストを実行します")
@@ -53,6 +68,27 @@ class WebSocketManager: ObservableObject {
         func setMessagingManager(_ manager: MultipeerMessagingManager) {
             self.messagingManager = manager
             print("[WebSocket] MessagingManagerが設定されました")
+            print("[WebSocket] 設定後の確認 - messagingManager: \(messagingManager != nil)")
+            
+            // 設定直後にUUID状況をテスト
+            let peerUUIDMap = manager.getAllPeerUUIDs()
+            let firstPeerUUID = manager.getFirstPeerUUID()
+            print("[WebSocket] 設定直後のpeerUUIDMap: \(peerUUIDMap)")
+            print("[WebSocket] 設定直後のfirstPeerUUID: '\(firstPeerUUID)'")
+        }
+        
+        // MessagingManagerの参照を強制的に再設定するメソッド
+        func forceSetMessagingManager(_ multipeerManager: MultipeerManager?) {
+            if let multipeerManager = multipeerManager {
+                self.messagingManager = multipeerManager.getMessagingManager()
+                print("[WebSocket] forceSetMessagingManager: MessagingManagerを強制再設定しました")
+                let peerUUIDMap = self.messagingManager?.getAllPeerUUIDs()
+                let firstPeerUUID = self.messagingManager?.getFirstPeerUUID()
+                print("[WebSocket] 再設定後のpeerUUIDMap: \(peerUUIDMap ?? [:])")
+                print("[WebSocket] 再設定後のfirstPeerUUID: '\(firstPeerUUID ?? "nil")'")
+            } else {
+                print("[WebSocket] forceSetMessagingManager: MultipeerManagerがnilのため設定できませんでした")
+            }
         }
         
         func isConnectedNow() -> Bool {
@@ -73,71 +109,227 @@ class WebSocketManager: ObservableObject {
             sendAllPendingMessagesIfNeeded()
         }
         
-        // WebSocket接続時に未送信メッセージを全て送信し、全て成功したらクリア
+        // WebSocket接続時に未送信メッセージを全て送信し、送信成功したもののみ個別削除
         private func sendAllPendingMessagesIfNeeded() {
-            // SQLiteデータベースから保存済みメッセージを取得
-            let savedMessages = MultipeerDatabaseManager.shared.fetchAllSavedMessages()
-            guard !savedMessages.isEmpty else { 
+            // SQLiteデータベースから保存済みメッセージを取得（IDも含む）
+            let savedMessagesWithId = MultipeerDatabaseManager.shared.fetchAllSavedMessagesWithId()
+            guard !savedMessagesWithId.isEmpty else { 
                 print("[WebSocket] DB内に未送信メッセージはありません")
                 return 
             }
             
-            print("[WebSocket] SQLiteから未送信メッセージを送信します: \(savedMessages.count)件")
-            var allSucceeded = true
+            print("[WebSocket] SQLiteから未送信メッセージを送信します: \(savedMessagesWithId.count)件")
             let group = DispatchGroup()
+            var successfulMessageIds: [Int] = []
+            let successfulMessageIdsLock = NSLock()
             
-            for msgData in savedMessages {
+            for msgData in savedMessagesWithId {
                 group.enter()
-                let chatMessage = ChatMessage(device: msgData.senderId, message: msgData.messageText)
+                // DBから取り出したデータの詳細をログ出力
+                print("[WebSocket] DB取得データ詳細: ID=\(msgData.id), sender='\(msgData.senderId)', receiver='\(msgData.receiverId)', message='\(msgData.messageText)'")
+                
+                // receiver_idが空またはunknownの場合の対処
+                let finalReceiverId: String
+                if msgData.receiverId.isEmpty || msgData.receiverId == "unknown" {
+                    // MessagingManagerから最新のUUIDを取得
+                    if let messagingManager = messagingManager {
+                        // MessagingManagerの状態を詳細確認
+                        let peerUUIDMap = messagingManager.getAllPeerUUIDs()
+                        print("[WebSocket] DB送信時 - MessagingManager peerUUIDMap状態: \(peerUUIDMap)")
+                        
+                        // ConnectionManagerの接続状態も確認
+                        if let multipeerManager = multipeerManager {
+                            let connectedPeers = multipeerManager.connectedPeers
+                            print("[WebSocket] DB送信時 - MultipeerConnectivity接続状態: \(connectedPeers.count)台接続中")
+                            if connectedPeers.isEmpty {
+                                print("[WebSocket] DB送信時 - MultipeerConnectivityが接続されていないため、receiverIdはunknownに設定")
+                            } else {
+                                print("[WebSocket] DB送信時 - 接続済みピア: \(connectedPeers.map { $0.displayName })")
+                            }
+                        }
+                        
+                        finalReceiverId = messagingManager.getFirstPeerUUID()
+                        print("[WebSocket] receiver_idが空/unknownのため、MessagingManagerから取得: '\(finalReceiverId)'")
+                    } else {
+                        finalReceiverId = "unknown"
+                        print("[WebSocket] MessagingManagerが利用できないため'unknown'を使用")
+                    }
+                } else {
+                    finalReceiverId = msgData.receiverId
+                    print("[WebSocket] DBのreceiver_idをそのまま使用: '\(finalReceiverId)'")
+                }
+                
+                // DBから取り出したデータをそのまま使用
+                let chatMessage = ChatMessage(
+                    senderId: msgData.senderId,
+                    receiverId: finalReceiverId, 
+                    message: msgData.messageText,
+                    timestamp: msgData.createdAt
+                )
                 guard let jsonData = try? JSONEncoder().encode(chatMessage),
                       let jsonString = String(data: jsonData, encoding: .utf8) else {
-                    print("[WebSocket] JSONエンコード失敗: \(msgData.messageText)")
-                    allSucceeded = false
+                    print("[WebSocket] JSONエンコード失敗: ID \(msgData.id) - \(msgData.messageText)")
                     group.leave()
                     continue
                 }
                 
+                print("[WebSocket] 送信JSON: \(jsonString)")
                 let wsMsg = URLSessionWebSocketTask.Message.string(jsonString)
                 webSocketTask?.send(wsMsg) { [weak self] error in
                     if let error = error {
-                        print("[WebSocket] 未送信メッセージ送信失敗: \(error)")
-                        allSucceeded = false
+                        print("[WebSocket] 未送信メッセージ送信失敗: ID \(msgData.id) - \(error)")
                     } else {
-                        print("[WebSocket] DB送信成功: sender:\(msgData.senderId) receiver:\(msgData.receiverId) message:\(msgData.messageText)")
+                        print("[WebSocket] DB送信成功: ID \(msgData.id) sender:\(msgData.senderId) receiver:\(finalReceiverId) message:\(msgData.messageText)")
+                        // 送信成功したメッセージIDを記録
+                        successfulMessageIdsLock.lock()
+                        successfulMessageIds.append(msgData.id)
+                        successfulMessageIdsLock.unlock()
                     }
                     group.leave()
                 }
             }
             
             group.notify(queue: .main) {
-                if allSucceeded {
-                    print("[WebSocket] 全ての未送信メッセージ送信成功。SQLiteデータベースをクリアします。")
-                    self.clearPendingMessages()
+                // 送信成功したメッセージのみ個別削除
+                print("[WebSocket] 送信完了: 成功 \(successfulMessageIds.count)件 / 全体 \(savedMessagesWithId.count)件")
+                for messageId in successfulMessageIds {
+                    let deleteSuccess = MultipeerDatabaseManager.shared.deleteMessage(withId: messageId)
+                    if deleteSuccess {
+                        print("[WebSocket] DB個別削除成功: ID \(messageId)")
+                    } else {
+                        print("[WebSocket] DB個別削除失敗: ID \(messageId)")
+                    }
+                }
+                
+                if successfulMessageIds.count == savedMessagesWithId.count {
+                    print("[WebSocket] 全メッセージ送信成功・削除完了")
                 } else {
-                    print("[WebSocket] 一部未送信メッセージ送信失敗。SQLiteデータベースはクリアしません。")
+                    let failedCount = savedMessagesWithId.count - successfulMessageIds.count
+                    print("[WebSocket] \(failedCount)件の送信失敗メッセージがDBに残存")
                 }
             }
         }
         
-        // 修正版: JSONで送信 + receiverId対応
+        // 修正版: JSONで送信 + receiverId対応 + 重複防止
         func send(_ message: String, receiverId: String? = nil) {
-            print("状態: \(webSocketTask?.state != .running)")
+            print("[WebSocket] send()開始 - receiverId: '\(receiverId ?? "nil")'")
+            print("[WebSocket] WebSocket状態: \(webSocketTask?.state != .running)")
+            print("[WebSocket] messagingManager存在確認: \(messagingManager != nil)")
+            print("[WebSocket] multipeerManager存在確認: \(multipeerManager != nil)")
+            
+            // MessagingManagerの参照を送信前に強制的に確認・再設定
+            if messagingManager == nil {
+                print("[WebSocket] 警告: MessagingManagerがnilです。強制再設定を試みます...")
+                forceSetMessagingManager(multipeerManager)
+            }
+            
             if webSocketTask?.state != .running {
                 print("WebSocketは接続されていません。メッセージを保存します。")
                 saveMessageLocally(message, receiverId: receiverId)
             } else {
-                let chatMessage = ChatMessage(device: UIDevice.current.name, message: message)
-                guard let jsonData = try? JSONEncoder().encode(chatMessage),
-                      let jsonString = String(data: jsonData, encoding: .utf8) else {
-                    print("JSONエンコード失敗")
-                    return
-                }
-                let msg = URLSessionWebSocketTask.Message.string(jsonString)
-                webSocketTask?.send(msg) { [weak self] error in
-                    if let error = error {
-                        print("送信エラー: \(error)")
-                        self?.attemptReconnect()
+                // UUID交換の完了を確認してから送信
+                sendMessageWithUUIDCheck(message: message, receiverId: receiverId, retryCount: 0)
+            }
+        }
+        
+        // UUID交換完了を確認してからメッセージを送信するメソッド
+        private func sendMessageWithUUIDCheck(message: String, receiverId: String?, retryCount: Int) {
+            let maxRetries = 3
+            let retryDelay: TimeInterval = 0.5
+            
+            // 自分のUUIDを取得
+            let myUUID = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+                
+            // 受信者IDを決定
+            let finalReceiverId: String
+            if let providedReceiverId = receiverId, !providedReceiverId.isEmpty && providedReceiverId != "unknown" {
+                finalReceiverId = providedReceiverId
+                print("[WebSocket] 引数で指定されたreceiverIdを使用: '\(providedReceiverId)'")
+            } else if let messagingManager = messagingManager {
+                // MessagingManagerの状態を詳細確認
+                print("[WebSocket] MessagingManagerが存在します")
+                let peerUUIDMap = messagingManager.getAllPeerUUIDs()
+                print("[WebSocket] MessagingManager peerUUIDMap状態: \(peerUUIDMap)")
+                
+                // ConnectionManagerの接続状態も確認
+                if let multipeerManager = multipeerManager {
+                    let connectedPeers = multipeerManager.connectedPeers
+                    print("[WebSocket] MultipeerConnectivity接続状態: \(connectedPeers.count)台接続中")
+                    if connectedPeers.isEmpty {
+                        print("[WebSocket] MultipeerConnectivityが接続されていないため、receiverIdはunknownに設定")
+                        finalReceiverId = "unknown"
+                    } else {
+                        print("[WebSocket] 接続済みピア: \(connectedPeers.map { $0.displayName })")
+                        
+                        // 各ピアのUUIDマップ状況を詳細確認
+                        for peer in connectedPeers {
+                            let peerUUID = peerUUIDMap[peer.displayName]
+                            print("[WebSocket] ピア '\(peer.displayName)' のUUID: '\(peerUUID ?? "未取得")'")
+                        }
+                        
+                        // UUIDを取得（優先順位: peerUUIDMap -> exchangedPeerUUID -> "unknown"）
+                        let peerUUID = messagingManager.getFirstPeerUUID()
+                        print("[WebSocket] MessagingManagerからUUID取得: '\(peerUUID)'")
+                        
+                        // UUID交換が未完了の場合は少し待ってからリトライ
+                        if (peerUUID == "unknown" || peerUUID.isEmpty) && retryCount < maxRetries {
+                            print("[WebSocket] UUID交換未完了（試行 \(retryCount + 1)/\(maxRetries)）。\(retryDelay)秒後にリトライします...")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
+                                self?.sendMessageWithUUIDCheck(message: message, receiverId: receiverId, retryCount: retryCount + 1)
+                            }
+                            return
+                        }
+                        
+                        // フォールバック処理：unknownの場合はより積極的に取得を試みる
+                        if peerUUID == "unknown" || peerUUID.isEmpty {
+                            print("[WebSocket] 警告: UUIDが'unknown'または空です。強制的にUUID交換を確認します...")
+                            let exchangedUUID = messagingManager.getExchangedPeerUUID()
+                            print("[WebSocket] exchangedPeerUUID確認: '\(exchangedUUID)'")
+                            if !exchangedUUID.isEmpty && exchangedUUID != "unknown" {
+                                finalReceiverId = exchangedUUID
+                                print("[WebSocket] exchangedPeerUUIDを使用: '\(exchangedUUID)'")
+                            } else {
+                                finalReceiverId = "unknown"
+                                print("[WebSocket] フォールバック処理でもUUIDが取得できませんでした。最大リトライ回数に達したため'unknown'を使用します")
+                            }
+                        } else {
+                            finalReceiverId = peerUUID
+                        }
                     }
+                } else {
+                    finalReceiverId = "unknown"
+                    print("[WebSocket] MultipeerManagerが設定されていません")
+                }
+            } else {
+                finalReceiverId = "unknown"
+                print("[WebSocket] MessagingManagerが設定されていないため'unknown'を使用")
+            }
+            
+            print("[WebSocket] 最終決定 - sender: '\(myUUID)', receiver: '\(finalReceiverId)'")
+            
+            let chatMessage = ChatMessage(
+                senderId: myUUID,
+                receiverId: finalReceiverId,
+                message: message,
+                timestamp: ISO8601DateFormatter().string(from: Date())
+            )
+            guard let jsonData = try? JSONEncoder().encode(chatMessage),
+                  let jsonString = String(data: jsonData, encoding: .utf8) else {
+                print("JSONエンコード失敗")
+                return
+            }
+            
+            print("[WebSocket] 送信JSON: \(jsonString)")
+            let msg = URLSessionWebSocketTask.Message.string(jsonString)
+            webSocketTask?.send(msg) { [weak self] error in
+                if let error = error {
+                    print("送信エラー: \(error)")
+                    // WebSocket送信失敗時のみDBに保存
+                    self?.saveMessageLocally(message, receiverId: receiverId)
+                    self?.attemptReconnect()
+                } else {
+                    print("[WebSocket] 送信成功: sender:\(myUUID) receiver:\(finalReceiverId) message:\(message)")
+                    print("[WebSocket] 送信成功のためDBには保存しません")
                 }
             }
         }
@@ -151,13 +343,33 @@ class WebSocketManager: ObservableObject {
             
             // 受信者IDを決定：1) 引数で指定されたもの、2) MessagingManagerから取得、3) "unknown"
             let finalReceiverId: String
-            if let providedReceiverId = receiverId, !providedReceiverId.isEmpty {
+            if let providedReceiverId = receiverId, !providedReceiverId.isEmpty && providedReceiverId != "unknown" {
                 finalReceiverId = providedReceiverId
                 print("[WebSocket] 引数で指定されたreceiverIdを使用: '\(providedReceiverId)'")
             } else if let messagingManager = messagingManager {
+                // MessagingManagerの状態を詳細確認
+                let peerUUIDMap = messagingManager.getAllPeerUUIDs()
+                print("[WebSocket] saveMessageLocally - MessagingManager peerUUIDMap状態: \(peerUUIDMap)")
+                
+                // ConnectionManagerの接続状態も確認
+                if let multipeerManager = multipeerManager {
+                    let connectedPeers = multipeerManager.connectedPeers
+                    print("[WebSocket] saveMessageLocally - MultipeerConnectivity接続状態: \(connectedPeers.count)台接続中")
+                    if connectedPeers.isEmpty {
+                        print("[WebSocket] saveMessageLocally - MultipeerConnectivityが接続されていないため、receiverIdはunknownに設定")
+                    } else {
+                        print("[WebSocket] saveMessageLocally - 接続済みピア: \(connectedPeers.map { $0.displayName })")
+                    }
+                }
+                
                 let firstPeerUUID = messagingManager.getFirstPeerUUID()
-                finalReceiverId = firstPeerUUID
-                print("[WebSocket] MessagingManagerからUUID取得: '\(firstPeerUUID)'")
+                if firstPeerUUID != "unknown" && !firstPeerUUID.isEmpty {
+                    finalReceiverId = firstPeerUUID
+                    print("[WebSocket] MessagingManagerからUUID取得: '\(firstPeerUUID)'")
+                } else {
+                    finalReceiverId = "unknown"
+                    print("[WebSocket] MessagingManagerからのUUIDが無効のため'unknown'を使用")
+                }
             } else {
                 finalReceiverId = "unknown"
                 print("[WebSocket] MessagingManagerが設定されていないため'unknown'を使用")
@@ -170,6 +382,10 @@ class WebSocketManager: ObservableObject {
             // 保存後の確認
             let savedMessages = MultipeerDatabaseManager.shared.fetchAllSavedMessages()
             print("[WebSocket] 保存後確認 - DB内メッセージ数: \(savedMessages.count)")
+            // 最後に保存されたメッセージの詳細も表示
+            if let lastMessage = savedMessages.first {
+                print("[WebSocket] 最新保存メッセージ: sender='\(lastMessage.senderId)', receiver='\(lastMessage.receiverId)', message='\(lastMessage.messageText)'")
+            }
         }
         
         public func getPendingMessages() -> [String] {

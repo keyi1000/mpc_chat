@@ -4,7 +4,7 @@ import MultipeerConnectivity
 // メインのビュー
 struct ContentView: View {
     // MultipeerManagerをStateObjectとして保持
-    @StateObject private var multipeerManager = MultipeerManager()
+    @StateObject private var multipeerManager: MultipeerManager
     // WebSocketManagerをmultipeerManager付きで初期化
     @StateObject private var webSocketManager: WebSocketManager
     // 送信するメッセージを格納する状態変数
@@ -17,9 +17,10 @@ struct ContentView: View {
     
     // イニシャライザでwebSocketManagerにmultipeerManagerを渡す
     init() {
-        let multipeer = MultipeerManager()
-        _multipeerManager = StateObject(wrappedValue: multipeer)
-        _webSocketManager = StateObject(wrappedValue: WebSocketManager(multipeerManager: multipeer))
+        // 1つのMultipeerManagerインスタンスを両方で共有
+        let sharedMultipeer = MultipeerManager()
+        _multipeerManager = StateObject(wrappedValue: sharedMultipeer)
+        _webSocketManager = StateObject(wrappedValue: WebSocketManager(multipeerManager: sharedMultipeer))
     }
     
     var body: some View {
@@ -158,6 +159,11 @@ struct ContentView: View {
             multipeerManager.start()
             webSocketManager.connect()
             username = webSocketManager.userName // 現在のユーザー名を取得
+            
+            // WebSocketManagerにMessagingManagerの参照を確実に設定
+            let messagingManager = multipeerManager.getMessagingManager()
+            webSocketManager.setMessagingManager(messagingManager)
+            print("[ContentView] WebSocketManagerにMessagingManagerの参照を設定しました")
         }
         .onDisappear {
             multipeerManager.stop()

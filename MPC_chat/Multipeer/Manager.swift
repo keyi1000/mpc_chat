@@ -100,6 +100,14 @@ class MultipeerManager: ObservableObject {
     func printAllSavedMessagesToLog() {
         MultipeerDatabaseManager.shared.printAllSavedMessagesToLog()
     }
+    
+    /**
+     * MessagingManagerへの参照を取得（WebSocketManager用）
+     * - Returns: MessagingManagerのインスタンス（常に存在するためnon-optional）
+     */
+    func getMessagingManager() -> MultipeerMessagingManager {
+        return messagingManager
+    }
 }
 
 // MARK: - Legacy Compatibility Functions
