@@ -156,6 +156,10 @@ struct ContentView: View {
             .padding()
         }
         .onAppear {
+            // 初回起動時のデータベーステストメッセージをクリア
+            MultipeerDatabaseManager.shared.clearAllMessages()
+            print("[ContentView] 初期化時にデータベーステストメッセージをクリアしました")
+            
             multipeerManager.start()
             webSocketManager.connect()
             username = webSocketManager.userName // 現在のユーザー名を取得
