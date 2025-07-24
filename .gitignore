@@ -35,3 +35,5 @@ Carthage/Build/
 # IDE files
 .vscode/
 .idea/
+
+.env
