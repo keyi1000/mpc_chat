@@ -1,6 +1,19 @@
 import Foundation
 import UIKit // iOSの場合のみ必要
 
+// .envファイルから環境変数を取得する簡易関数
+func loadEnvValue(for key: String) -> String? {
+    guard let envPath = Bundle.main.path(forResource: ".env", ofType: nil),
+          let envString = try? String(contentsOfFile: envPath) else { return nil }
+    for line in envString.components(separatedBy: "\n") {
+        let parts = line.split(separator: "=", maxSplits: 1)
+        if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == key {
+            return String(parts[1]).trimmingCharacters(in: .whitespaces)
+        }
+    }
+    return nil
+}
+
 struct ChatMessage: Codable {
     let senderId: String     // 送信者UUID
     let receiverId: String   // 受信者UUID
@@ -17,7 +30,13 @@ class WebSocketManager: ObservableObject {
     // MessagingManagerの参照を追加（UUID取得用）
     private weak var messagingManager: MultipeerMessagingManager?
     private var webSocketTask: URLSessionWebSocketTask?
-    private let url = URL(string: "wss://mpc_websocket.keyi9029.com/ws")!
+    private let url: URL = {
+        if let wsUrlString = loadEnvValue(for: "WEBSOCKET_URL"), let wsUrl = URL(string: wsUrlString) {
+            return wsUrl
+        }
+        // デフォルト値（.envが読めない場合）
+        return URL(string: "wss://mpc_websocket.keyi9029.com/ws")!
+    }()
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 5
     private let reconnectDelay: TimeInterval = 5.0
@@ -422,10 +441,12 @@ class WebSocketManager: ObservableObject {
                 case .success(let message):
                     switch message {
                     case .string(let text):
-                        DispatchQueue.main.async {
-                            self.receivedMessage = text
-                            self.receivedMessages.append(text)
-                        }
+                        print("[WebSocket] メッセージを受信しましたが、画面表示はしません: \(text)")
+                        // 受信したメッセージは画面に表示せず、ログ出力のみ
+                        // DispatchQueue.main.async {
+                        //     self.receivedMessage = text
+                        //     self.receivedMessages.append(text)
+                        // }
                     case .data(let data):
                         print("データ受信: \(data)")
                     @unknown default:
