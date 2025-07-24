@@ -31,7 +31,7 @@ WebSocket サーバーの URL は`.env`で管理します。
 例:
 
 ```
-WEBSOCKET_URL=wss://mpc_websocket.keyi9029.com/ws
+WEBSOCKET_URL=自身のWSサーバ
 ```
 
 ## ビルド・実行方法
